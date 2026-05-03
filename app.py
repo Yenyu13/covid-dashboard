@@ -1,443 +1,3 @@
-# -*- coding: utf-8 -*-
-"""APP PY .ipynb
-
-"""
-
-from pyspark.sql import SparkSession
-
-spark = SparkSession.builder \
-    .appName("Analisis_COVID_Colombia") \
-    .getOrCreate()
-
-df = pd.read_csv("Covid_small.csv")
-
-df.printSchema()
-
-df.show(5)
-
-df = pd.read_csv("Covid_small.csv")
-
-from pyspark.sql.functions import col, to_date, when
-
-df = df.withColumn("fecha", to_date(col("fecha reporte web"))) \
-       .withColumn("edad", col("Edad")) \
-       .withColumn("sexo", col("Sexo"))
-
-df = df.withColumn(
-    "riesgo_edad",
-    when(col("edad") >= 60, 1).otherwise(0)
-)
-
-df = df.withColumn(
-    "es_fallecido",
-    when(col("Fecha de muerte").isNotNull(), 1).otherwise(0)
-)
-
-df = df.withColumn(
-    "es_importado",
-    when(col("Tipo de contagio") == "Importado", 1).otherwise(0)
-)
-
-from pyspark.sql.functions import randn
-
-df = df.withColumn(
-    "carga_hospitalaria",
-    (
-        50 +
-        col("riesgo_edad") * 30 +
-        col("es_fallecido") * 50 +
-        col("es_importado") * 10 +
-        randn() * 5
-    ).cast("int")
-)
-
-"""**ESTRUCTURA Y CALIDAD DEL DATO**"""
-
-from pyspark.sql.functions import sum, when
-
-df.select([
-    sum(when(col(c).isNull(), 1).otherwise(0)).alias(c)
-    for c in df.columns
-]).show()
-
-"""**LIMPIEZA DE LA DATA**"""
-
-from pyspark.sql.functions import col, to_date
-
-df = df.withColumn("fecha_reporte", to_date(col("fecha reporte web"))) \
-       .withColumn("fecha_sintomas", to_date(col("Fecha de inicio de síntomas"))) \
-       .withColumn("fecha_muerte", to_date(col("Fecha de muerte"))) \
-       .withColumn("edad", col("Edad").cast("int"))
-
-df = df.dropDuplicates()
-
-from pyspark.sql.functions import sum, when
-
-df.select([
-    sum(when(col(c).isNull(), 1).otherwise(0)).alias(c)
-    for c in df.columns
-]).show()
-
-df = df.filter((col("edad") > 0) & (col("edad") < 110))
-
-df = df.filter(col("fecha_reporte").isNotNull())
-
-from pyspark.sql.functions import upper
-
-df = df.withColumn("Sexo", upper(col("Sexo"))) \
-       .withColumn("Nombre departamento", upper(col("Nombre departamento")))
-
-from pyspark.sql.functions import when
-
-df = df.withColumn(
-    "grupo_edad",
-    when(col("edad") < 18, "MENOR")
-    .when((col("edad") >= 18) & (col("edad") < 60), "ADULTO")
-    .otherwise("ADULTO MAYOR")
-)
-
-df.printSchema()
-df.count()
-df.show(5)
-
-"""**ANALISIS EPIDEMIOLOGICO**"""
-
-from pyspark.sql.functions import col, when, month, year
-
-df = df.withColumn(
-    "es_fallecido",
-    when(col("fecha_muerte").isNotNull(), 1).otherwise(0)
-)
-
-df = df.withColumn("anio", year(col("fecha_reporte"))) \
-       .withColumn("mes", month(col("fecha_reporte")))
-
-"""***INCIDENCIA***"""
-
-incidencia_dia = df.groupBy("fecha_reporte") \
-    .count() \
-    .orderBy("fecha_reporte")
-
-incidencia_dia.show()
-
-"""***CASOS POR MES***"""
-
-incidencia_mes = df.groupBy("anio", "mes") \
-    .count() \
-    .orderBy("anio", "mes")
-
-incidencia_mes.show()
-
-"""***MORTALIDAD***"""
-
-total_casos = df.count()
-total_muertes = df.filter(col("es_fallecido") == 1).count()
-
-print("Total casos:", total_casos)
-print("Total muertes:", total_muertes)
-
-"""***TAZA DE MORTALIDAD***"""
-
-tasa_mortalidad = (total_muertes / total_casos) * 100
-print(f"Tasa de mortalidad: {tasa_mortalidad:.2f}%")
-
-"""***LETALIDAD***"""
-
-letalidad_edad = df.groupBy("grupo_edad") \
-    .agg({
-        "es_fallecido": "sum",
-        "*": "count"
-    }) \
-    .withColumnRenamed("sum(es_fallecido)", "muertes") \
-    .withColumnRenamed("count(1)", "casos")
-
-letalidad_edad = letalidad_edad.withColumn(
-    "letalidad_%",
-    (col("muertes") / col("casos")) * 100
-)
-
-letalidad_edad.show()
-
-"""***DISTRIBUCION POBLACIONAL***"""
-
-df.groupBy("Sexo").count().show()
-
-df.groupBy("grupo_edad").count().show()
-
-"""**ANALISIS GEOGRAFICO**"""
-
-casos_departamento = df.groupBy("Nombre departamento") \
-    .count() \
-    .orderBy(col("count").desc())
-
-casos_departamento.show()
-
-muertes_departamento = df.filter(col("es_fallecido") == 1) \
-    .groupBy("Nombre departamento") \
-    .count() \
-    .orderBy(col("count").desc())
-
-muertes_departamento.show()
-
-"""**TIPO DE CONTAGIO**"""
-
-df.groupBy("Tipo de contagio").count().show()
-
-from pyspark.sql.functions import avg
-
-promedio = incidencia_dia.select(avg("count")).first()[0]
-
-alertas = incidencia_dia.filter(col("count") > promedio)
-
-alertas.show()
-
-"""**ANALISIS DEL RIESGO**"""
-
-df.groupBy("grupo_edad") \
-  .sum("es_fallecido") \
-  .show()
-
-"""**FEATURE ENGINEERING**"""
-
-from pyspark.ml.feature import StringIndexer
-
-sexo_indexer = StringIndexer(inputCol="Sexo", outputCol="sexo_index")
-contagio_indexer = StringIndexer(inputCol="Tipo de contagio", outputCol="contagio_index")
-grupo_indexer = StringIndexer(inputCol="grupo_edad", outputCol="grupo_index")
-
-df = sexo_indexer.fit(df).transform(df)
-df = contagio_indexer.fit(df).transform(df)
-df = grupo_indexer.fit(df).transform(df)
-
-from pyspark.ml.feature import VectorAssembler
-
-assembler = VectorAssembler(
-    inputCols=[
-        "edad",
-        "sexo_index",
-        "contagio_index",
-        "grupo_index"
-    ],
-    outputCol="features"
-)
-
-data_ml = assembler.transform(df).select("features", "es_fallecido")
-
-data_ml.show(5)
-
-"""***MACHING LEARNING***"""
-
-from pyspark.ml.regression import LinearRegression
-
-train, test = data_ml.randomSplit([0.8, 0.2], seed=42)
-
-lr = LinearRegression(labelCol="es_fallecido")
-model_lr = lr.fit(train)
-
-pred_lr = model_lr.transform(test)
-
-from pyspark.ml.classification import LogisticRegression
-
-lr = LogisticRegression(labelCol="es_fallecido", featuresCol="features")
-model = lr.fit(train)
-
-predicciones = model.transform(test)
-predicciones.select("features", "es_fallecido", "prediction", "probability").show(5)
-
-from pyspark.ml.evaluation import BinaryClassificationEvaluator
-
-evaluator = BinaryClassificationEvaluator(labelCol="es_fallecido")
-
-auc = evaluator.evaluate(predicciones)
-print(f"AUC: {auc:.3f}")
-
-"""### Comparación de Modelos: Regresión Lineal vs. Regresión Logística"""
-
-print("Predicciones del Modelo de Regresión Lineal:")
-pred_lr.select("features", "es_fallecido", "prediction").show(5)
-
-print("Predicciones del Modelo de Regresión Logística:")
-predicciones.select("features", "es_fallecido", "prediction", "probability").show(5)
-
-"""### Análisis de las Predicciones:
-
-*   **Regresión Lineal (`pred_lr`)**:
-    *   El modelo de Regresión Lineal predice un valor continuo para `es_fallecido`. Aunque `es_fallecido` es una variable binaria (0 o 1), la regresión lineal intenta predecir un valor que puede estar fuera de este rango [0, 1]. En el contexto de un resultado binario, el valor predicho a menudo se interpreta como la probabilidad, pero puede ser menor que 0 o mayor que 1, lo cual no tiene sentido como probabilidad.
-
-*   **Regresión Logística (`predicciones`)**:
-    *   El modelo de Regresión Logística, por otro lado, está diseñado específicamente para clasificar resultados binarios. La columna `probability` muestra la probabilidad de que el resultado sea 1 (fallecido) y 0 (no fallecido). La columna `prediction` es el resultado de clasificar estas probabilidades (generalmente, si la probabilidad es mayor a 0.5, se predice 1, de lo contrario 0). Esto hace que la Regresión Logística sea más apropiada para problemas de clasificación binaria como este.
-
-En resumen, la Regresión Logística es la elección adecuada para predecir si un paciente 'es_fallecido' (un evento binario), mientras que la Regresión Lineal sería más adecuada si estuviéramos prediciendo una variable continua (por ejemplo, el número de días que un paciente estuvo hospitalizado).
-
-## **PREPARACION PARA EL DASHBOARD**
-"""
-
-from pyspark.sql.functions import col
-
-fact_covid = df.select(
-    col("fecha_reporte").alias("fecha"),
-    col("Nombre departamento").alias("departamento"),
-    col("Nombre municipio").alias("municipio"),
-    col("Sexo").alias("sexo"),
-    col("grupo_edad"),
-    col("Tipo de contagio").alias("tipo_contagio"),
-    col("es_fallecido")
-)
-
-from pyspark.sql.functions import year, month, dayofmonth, weekofyear
-
-dim_tiempo = fact_covid.select("fecha") \
-    .dropDuplicates() \
-    .withColumn("anio", year(col("fecha"))) \
-    .withColumn("mes", month(col("fecha"))) \
-    .withColumn("dia", dayofmonth(col("fecha"))) \
-    .withColumn("semana", weekofyear(col("fecha")))
-
-dim_geo = fact_covid.select("departamento", "municipio").dropDuplicates()
-
-dim_poblacion = fact_covid.select("sexo", "grupo_edad").dropDuplicates()
-
-
-import streamlit as st
-print("Streamlit cargado correctamente")
-
-import sys
-!{sys.executable} -m pip install cloudflared
-
-!streamlit run app.py
-
-# Commented out IPython magic to ensure Python compatibility.
-# %%writefile app.py
-# import streamlit as st
-# import pandas as pd
-# import plotly.express as px
-# from sklearn.model_selection import train_test_split
-# from sklearn.linear_model import LogisticRegression
-# from sklearn.metrics import accuracy_score, confusion_matrix
-# 
-# # -------------------------------------------------
-# # CONFIGURACIÓN GENERAL
-# # -------------------------------------------------
-# st.set_page_config(
-#     page_title="Dashboard Epidemiológico COVID",
-#     layout="wide"
-# )
-# 
-# st.title("Análisis Epidemiológico COVID-19")
-# st.write("""
-# Dashboard interactivo basado en datos reales de COVID-19.
-# Incluye análisis exploratorio, indicadores epidemiológicos y modelo predictivo.
-# """)
-# 
-# # -------------------------------------------------
-# # CARGA DE DATOS
-# # -------------------------------------------------
-# df = pd.read_csv("Covid.csv")
-# 
-# # Limpieza básica
-# 
-# df["fecha_reporte"] = pd.to_datetime(df["fecha reporte web"], errors="coerce")
-# df["edad"] = pd.to_numeric(df["Edad"], errors="coerce")
-# df["es_fallecido"] = df["Fecha de muerte"].notnull().astype(int)
-# 
-# # -------------------------------------------------
-# # SIDEBAR
-# # -------------------------------------------------
-# menu = st.sidebar.radio(
-#     "Secciones",
-#     ["Contexto", "EDA", "Indicadores", "Modelo ML", "Conclusiones"]
-# )
-# 
-# # -------------------------------------------------
-# # CONTEXTO
-# # -------------------------------------------------
-# if menu == "Contexto":
-#     st.subheader("Contexto epidemiológico")
-#     st.write("""
-#     El COVID-19 ha generado impactos significativos en la salud pública.
-#     Este dashboard permite analizar patrones de contagio, mortalidad
-#     y factores de riesgo en la población.
-#     """)
-# 
-# # -------------------------------------------------
-# # EDA
-# # -------------------------------------------------
-# elif menu == "EDA":
-#     st.subheader("Exploración de datos")
-# 
-#     st.dataframe(df.head())
-# 
-#     st.markdown("### Distribución de edades")
-#     st.plotly_chart(px.histogram(df, x="edad"))
-# 
-#     st.markdown("### Casos por sexo")
-#     st.plotly_chart(px.bar(df["Sexo"].value_counts().reset_index(), x="count", y="Sexo", orientation='h'))
-# 
-#     st.markdown("### Casos por departamento")
-#     depto = df["Nombre departamento"].value_counts().head(10).reset_index()
-#     st.plotly_chart(px.bar(depto, x="count", y="Nombre departamento", orientation='h'))
-# 
-# # -------------------------------------------------
-# # INDICADORES
-# # -------------------------------------------------
-# elif menu == "Indicadores":
-#     st.subheader("Indicadores epidemiológicos")
-# 
-#     total = len(df)
-#     muertes = df["es_fallecido"].sum()
-#     tasa = (muertes / total) * 100
-# 
-#     col1, col2, col3 = st.columns(3)
-#     col1.metric("Total casos", total)
-#     col2.metric("Total muertes", int(muertes))
-#     col3.metric("Tasa mortalidad (%)", round(tasa, 2))
-# 
-#     st.markdown("### Casos en el tiempo")
-#     casos_fecha = df.groupby("fecha_reporte").size().reset_index(name="casos")
-#     st.plotly_chart(px.line(casos_fecha, x="fecha_reporte", y="casos"))
-# 
-# # -------------------------------------------------
-# # MACHINE LEARNING
-# # -------------------------------------------------
-# elif menu == "Modelo ML":
-#     st.subheader("🤖 Predicción de mortalidad")
-# 
-#     df_ml = df[["edad", "Sexo", "es_fallecido"]].dropna()
-# 
-#     df_ml["Sexo"] = df_ml["Sexo"].astype("category").cat.codes
-# 
-#     X = df_ml[["edad", "Sexo"]]
-#     y = df_ml["es_fallecido"]
-# 
-#     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-# 
-#     model = LogisticRegression()
-#     model.fit(X_train, y_train)
-# 
-#     preds = model.predict(X_test)
-# 
-#     acc = accuracy_score(y_test, preds)
-#     cm = confusion_matrix(y_test, preds)
-# 
-#     st.metric("Accuracy", round(acc, 3))
-# 
-#     st.write("Matriz de confusión:")
-#     st.write(cm)
-# 
-# # -------------------------------------------------
-# # CONCLUSIONES
-# # -------------------------------------------------
-# else:
-#     st.subheader("Conclusiones")
-#     st.write("""
-#     - Se identifican patrones claros en la distribución de casos.
-#     - La edad es un factor clave en la mortalidad.
-#     - El modelo permite estimar riesgo de fallecimiento.
-#     - La analítica de datos fortalece la vigilancia epidemiológica.
-#     """)
-
-!streamlit run app.py
-
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -446,25 +6,19 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix
 
 # -------------------------------------------------
-# CONFIGURACIÓN GENERAL
+# CONFIGURACIÓN
 # -------------------------------------------------
-st.set_page_config(
-    page_title="Dashboard Epidemiológico COVID",
-    layout="wide"
-)
+st.set_page_config(page_title="Dashboard COVID", layout="wide")
 
-st.title("Análisis Epidemiológico COVID-19")
-st.write("""
-Dashboard interactivo basado en datos reales de COVID-19.
-Incluye análisis exploratorio, indicadores epidemiológicos y modelo predictivo.
-""")
+st.title("🦠 Análisis Epidemiológico COVID-19")
 
 # -------------------------------------------------
 # CARGA DE DATOS
 # -------------------------------------------------
-df = pd.read_csv("Covid.csv")
+df = pd.read_csv("Covid_pequeño.csv")
 
-# Limpieza básica
+# Limpieza
+df.columns = df.columns.str.strip()
 
 df["fecha_reporte"] = pd.to_datetime(df["fecha reporte web"], errors="coerce")
 df["edad"] = pd.to_numeric(df["Edad"], errors="coerce")
@@ -484,9 +38,8 @@ menu = st.sidebar.radio(
 if menu == "Contexto":
     st.subheader("Contexto epidemiológico")
     st.write("""
-    El COVID-19 ha generado impactos significativos en la salud pública.
-    Este dashboard permite analizar patrones de contagio, mortalidad
-    y factores de riesgo en la población.
+    Este dashboard permite analizar el comportamiento del COVID-19,
+    identificando patrones de contagio, mortalidad y factores de riesgo.
     """)
 
 # -------------------------------------------------
@@ -497,15 +50,18 @@ elif menu == "EDA":
 
     st.dataframe(df.head())
 
-    st.markdown("### Distribución de edades")
+    st.markdown("### Distribución de edad")
     st.plotly_chart(px.histogram(df, x="edad"))
 
     st.markdown("### Casos por sexo")
-    st.plotly_chart(px.bar(df["Sexo"].value_counts().reset_index(), x="count", y="Sexo", orientation='h'))
+    sexo = df["Sexo"].value_counts().reset_index()
+    sexo.columns = ["Sexo", "count"]
+    st.plotly_chart(px.bar(sexo, x="Sexo", y="count"))
 
-    st.markdown("### Casos por departamento")
+    st.markdown("### Top 10 departamentos")
     depto = df["Nombre departamento"].value_counts().head(10).reset_index()
-    st.plotly_chart(px.bar(depto, x="count", y="Nombre departamento", orientation='h'))
+    depto.columns = ["Departamento", "count"]
+    st.plotly_chart(px.bar(depto, x="Departamento", y="count"))
 
 # -------------------------------------------------
 # INDICADORES
@@ -522,7 +78,6 @@ elif menu == "Indicadores":
     col2.metric("Total muertes", int(muertes))
     col3.metric("Tasa mortalidad (%)", round(tasa, 2))
 
-    st.markdown("### Casos en el tiempo")
     casos_fecha = df.groupby("fecha_reporte").size().reset_index(name="casos")
     st.plotly_chart(px.line(casos_fecha, x="fecha_reporte", y="casos"))
 
@@ -533,13 +88,14 @@ elif menu == "Modelo ML":
     st.subheader("🤖 Predicción de mortalidad")
 
     df_ml = df[["edad", "Sexo", "es_fallecido"]].dropna()
-
     df_ml["Sexo"] = df_ml["Sexo"].astype("category").cat.codes
 
     X = df_ml[["edad", "Sexo"]]
     y = df_ml["es_fallecido"]
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
 
     model = LogisticRegression()
     model.fit(X_train, y_train)
@@ -550,8 +106,7 @@ elif menu == "Modelo ML":
     cm = confusion_matrix(y_test, preds)
 
     st.metric("Accuracy", round(acc, 3))
-
-    st.write("Matriz de confusión:")
+    st.write("Matriz de confusión")
     st.write(cm)
 
 # -------------------------------------------------
@@ -560,8 +115,8 @@ elif menu == "Modelo ML":
 else:
     st.subheader("Conclusiones")
     st.write("""
-    - Se identifican patrones claros en la distribución de casos.
-    - La edad es un factor clave en la mortalidad.
-    - El modelo permite estimar riesgo de fallecimiento.
-    - La analítica de datos fortalece la vigilancia epidemiológica.
+    - La edad influye en la mortalidad
+    - Existen diferencias por sexo y territorio
+    - El modelo permite estimar riesgo
+    - La analítica apoya la toma de decisiones en salud pública
     """)
