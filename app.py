@@ -44,13 +44,13 @@ spark = SparkSession.builder \
     .appName("Analisis_COVID_Colombia") \
     .getOrCreate()
 
-df = spark.read.csv("Covid.csv", header=True, inferSchema=True)
+df = pd.read_csv("Covid_small.csv")
 
 df.printSchema()
 
 df.show(5)
 
-df = spark.read.csv("Covid.csv", header=True, inferSchema=True)
+df = pd.read_csv("Covid_small.csv")
 
 from pyspark.sql.functions import col, to_date, when
 
