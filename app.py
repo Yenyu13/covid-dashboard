@@ -36,8 +36,6 @@ Estos datos evidencian un alto nivel de contagio en entornos cotidianos y famili
 **PREPARACION DE LOS DATOS**
 """
 
-!pip install pyspark streamlit pyngrok
-
 from pyspark.sql import SparkSession
 
 spark = SparkSession.builder \
