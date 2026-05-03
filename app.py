@@ -1,3 +1,10 @@
+import os
+
+BASE_DIR = os.path.dirname(__file__)
+file_path = os.path.join(BASE_DIR, "covid.csv")
+
+df = pd.read_csv(file_path)
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
